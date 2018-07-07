@@ -53,6 +53,8 @@ namespace TrueAdBlocker
         private Bitmap test;
         private Bitmap screen;
         private List<Rectangle> rectsCache = new List<Rectangle>();
+        private long currentTime = DateTime.Now.Ticks;
+        private long renderCurrentTime = DateTime.Now.Ticks;
 
         private void LoadForm(object sender, EventArgs e)
         {
@@ -60,98 +62,87 @@ namespace TrueAdBlocker
 
             SetFormToTransparent();
             TopMost = true;
-
-            //Process process = Process.GetProcessesByName("chrome")[0];
-            //Console.Out.WriteLine(process.Id);
-            //IntPtr processHandle = OpenProcess(PROCESS_WM_READ, false, process.Id);
-
-            //int bytesRead = 0;
-            //byte[] buffer = new byte[24]; //'Hello World!' takes 12*2 bytes because of Unicode 
-
-
-            //// 0x0046A3B8 is the address where I found the string, replace it with what you found
-            //ReadProcessMemory((int)processHandle, 0x0046A3B8, buffer, buffer.Length, ref bytesRead);
-
-            //Console.WriteLine(Encoding.Unicode.GetString(buffer) +
-            //   " (" + bytesRead.ToString() + "bytes)");
-            //Console.ReadLine();
+            // ad that needs to be hide
+            test = new Bitmap(Image.FromFile("./test.jpg"));
             buffer = new Bitmap(Width, Height);
             screen = new Bitmap(Width, Height);
-            test = new Bitmap(Image.FromFile("./test.jpg"));
 
-            var currentTime = DateTime.Now.Ticks;
-
-            var render = new Thread(() =>
+            var screenCaptureThread = new Thread(() =>
             {
                 while(true)
                 {
                     if (DateTime.Now.Ticks - currentTime > 1000)
                     {
-                        Console.Out.WriteLine("One second is passed");
-                        rectsCache.Clear();
-                    }
-                    if (rectsCache.Count > 0)
-                    {
-                        using (Graphics formG = CreateGraphics())
+                        lock(screen)
                         {
-                            Color customColor = Color.FromArgb(255, Color.Black);
-                            SolidBrush shadowBrush = new SolidBrush(customColor);
-                            formG.FillRectangles(shadowBrush, rectsCache.ToArray());
-                        }
-                    }
-                    else
-                    {
-                        using (var bg = Graphics.FromImage(screen))
-                        {
-                            bg.CopyFromScreen(0, 0, 0, 0, new Size());
-                        }
-                        // DrawToBitmap(screen, new Rectangle(0, 0, Width, Height));
-                        using (Graphics formG = CreateGraphics())
-                        {
-                            for (int x = 0; x < screen.Width; x++)
+                            Console.Out.WriteLine("screenCaptureThread TICK! %i", currentTime);
+                            Rectangle bounds = Screen.GetBounds(Point.Empty);
+                            using (var g = Graphics.FromImage(screen))
                             {
-                                for (int y = 0; y < screen.Height; y++)
-                                {
-                                    // Look for first rectangle
-                                    bool isMatch = true;
-                                    for (int tx = 0; tx < 16; tx++)
-                                    {
-                                        for (int ty = 0; ty < 16; ty++)
-                                        {
-                                            if (!ComparePixels(test.GetPixel(tx, ty), screen.GetPixel(x, y)))
-                                            {
-                                                isMatch = false;
-                                            }
-                                        }
-                                    }
-                                    if (isMatch)
-                                    {
-                                        Console.Out.WriteLine("We have a match!");
-                                        var rectToPatch = new Rectangle(x, y, test.Width, test.Height);
-                                        using (Graphics g = Graphics.FromImage(buffer))
-                                        {
-                                            Color customColor = Color.FromArgb(255, Color.Black);
-                                            SolidBrush shadowBrush = new SolidBrush(customColor);
-                                            g.FillRectangles(shadowBrush, new RectangleF[] { rectToPatch });
-                                        }
-                                        rectsCache.Add(rectToPatch);
-                                    }
-                                    formG.DrawImage(buffer, 0, 0);
-                                }
+                                g.CopyFromScreen(0, 0, 0, 0, bounds.Size);
                             }
+                            screen.Save("fuck.jpg");
+                            currentTime = DateTime.Now.Ticks;
+
                         }
                     }
                 }
             });
 
-            render.Start();
-        }
+            screenCaptureThread.Start();
+
+            var renderThread = new Thread(() =>
+            {
+                while (true)
+                {
+                    if (DateTime.Now.Ticks - renderCurrentTime > 24)
+                    {
+                        Console.Out.WriteLine("renderThread TICK!");
+
+                        for (var sx = 0; sx < screen.Width; sx++)
+                        {
+                            for (var sy = 0; sy < screen.Height; sy++)
+                            {
+                                var isMatch = true;
+                                for (var x = 0; x < test.Width; x++)
+                                {
+                                    for (var y = 0; y < test.Height; y++)
+                                    {
+                                        var pixel = test.GetPixel(x, y);
+                                        lock(screen)
+                                        {
+                                            var screenPixel = screen.GetPixel(sx, sy);
+                                            if (ComparePixels(pixel, screenPixel))
+                                            {
+                                                isMatch = false;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                if (isMatch)
+                                {
+                                    using (var g = Graphics.FromHwnd(Handle))
+                                    {
+                                        g.DrawRectangle(Pens.Black, sx, sy, test.Width, test.Height);
+                                    }
+                                }
+                            }
+                        }
+
+                        renderCurrentTime = DateTime.Now.Ticks;
+                    }
+                }
+            });
+
+            renderThread.Start();
+          }
 
         private void SetFormToTransparent()
         {
             SetWindowLong(this.Handle, GWL.ExStyle, (WS_EX)(_InitialStyle | 0x80000 | 0x20));
 
-            SetLayeredWindowAttributes(this.Handle, 0, (byte)(255 * 0.7), LWA.Alpha);
+            SetLayeredWindowAttributes(this.Handle, 0, (byte)(255 * 0.1), LWA.Alpha);
         }
         private void SetFormToOpaque()
         {
@@ -176,36 +167,7 @@ namespace TrueAdBlocker
 
         private void Render(object sender, PaintEventArgs e)
         {
-            //DrawToBitmap(screen, new Rectangle(0, 0, Width, Height));
-            //for (int x = 0; x < screen.Width; x++)
-            //{
-            //    for (int y = 0; y < screen.Height; y++)
-            //    {
-            //        // Look for first rectangle
-            //        bool isMatch = true;
-            //        for (int tx = 0; tx < 16; tx++)
-            //        {
-            //            for (int ty = 0; ty < 16; ty++)
-            //            {
-            //                if (!ComparePixels(test.GetPixel(tx, ty), screen.GetPixel(x, y)))
-            //                {
-            //                    isMatch = false;
-            //                }
-            //            }
-            //        }
-            //        if (isMatch)
-            //        {
-            //            Console.Out.WriteLine("We have a match!");
-            //            using (Graphics g = Graphics.FromImage(buffer))
-            //            {
-            //                Color customColor = Color.FromArgb(255, Color.Black);
-            //                SolidBrush shadowBrush = new SolidBrush(customColor);
-            //                g.FillRectangles(shadowBrush, new RectangleF[] { new Rectangle(x, y, test.Width, test.Height) });
-            //            }
-            //        }
-            //        e.Graphics.DrawImage(buffer, 0, 0);
-            //    }
-            //}
+          
         }
     }
 }
