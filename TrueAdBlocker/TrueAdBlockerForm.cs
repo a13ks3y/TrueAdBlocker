@@ -1,15 +1,13 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.ComponentModel;
-using System.Data;
-using System.Diagnostics;
 using System.Drawing;
-using System.Linq;
 using System.Runtime.InteropServices;
-using System.Text;
 using System.Threading;
-using System.Threading.Tasks;
 using System.Windows.Forms;
+using System.Timers;
+using Emgu;
+using Emgu.CV;
+using Emgu.CV.Structure;
 
 namespace TrueAdBlocker
 {
@@ -48,13 +46,14 @@ namespace TrueAdBlocker
             InitializeComponent();
         }
 
+        // public System.Timers.Timer ScreenShotTimer = new System.Timers.Timer(500);
+        // public System.Timers.Timer RenderTimer = new System.Timers.Timer(12);
+
+
         private int _InitialStyle;
-        private Bitmap buffer;
         private Bitmap test;
         private Bitmap screen;
         private List<Rectangle> rectsCache = new List<Rectangle>();
-        private long currentTime = DateTime.Now.Ticks;
-        private long renderCurrentTime = DateTime.Now.Ticks;
 
         private void LoadForm(object sender, EventArgs e)
         {
@@ -62,81 +61,48 @@ namespace TrueAdBlocker
 
             SetFormToTransparent();
             TopMost = true;
-            // ad that needs to be hide
-            test = new Bitmap(Image.FromFile("./test.jpg"));
-            buffer = new Bitmap(Width, Height);
             screen = new Bitmap(Width, Height);
+            test = new Bitmap(Image.FromFile("./test.jpg"));
 
-            var screenCaptureThread = new Thread(() =>
+            //ScreenShotTimer.Elapsed += ScreenShotTimerTick;
+            //ScreenShotTimer.AutoReset = true;
+            //ScreenShotTimer.Enabled = true;
+            //ScreenShotTimer.Start();
+
+            //RenderTimer.Elapsed += RenderTimerTick;
+            //RenderTimer.AutoReset = true;
+            //RenderTimer.Enabled = true;
+            //RenderTimer.Start();
+
+            var currentTime = DateTime.Now.Ticks;
+
+            var screenShotThread = new Thread(() =>
             {
-                while(true)
-                {
+                while(true) {
                     if (DateTime.Now.Ticks - currentTime > 1000)
                     {
-                        lock(screen)
-                        {
-                            Console.Out.WriteLine("screenCaptureThread TICK! %i", currentTime);
-                            Rectangle bounds = Screen.GetBounds(Point.Empty);
-                            using (var g = Graphics.FromImage(screen))
-                            {
-                                g.CopyFromScreen(0, 0, 0, 0, bounds.Size);
-                            }
-                            screen.Save("fuck.jpg");
-                            currentTime = DateTime.Now.Ticks;
-
-                        }
+                        ScreenShotTimerTick();
+                        currentTime = DateTime.Now.Ticks;
                     }
                 }
             });
-
-            screenCaptureThread.Start();
-
+            var renderCurrentTime = DateTime.Now.Ticks;
             var renderThread = new Thread(() =>
             {
-                while (true)
+                while(true)
                 {
-                    if (DateTime.Now.Ticks - renderCurrentTime > 24)
+                    if (DateTime.Now.Ticks - renderCurrentTime > 60)
                     {
-                        Console.Out.WriteLine("renderThread TICK!");
-
-                        for (var sx = 0; sx < screen.Width; sx++)
-                        {
-                            for (var sy = 0; sy < screen.Height; sy++)
-                            {
-                                var isMatch = true;
-                                for (var x = 0; x < test.Width; x++)
-                                {
-                                    for (var y = 0; y < test.Height; y++)
-                                    {
-                                        var pixel = test.GetPixel(x, y);
-                                        lock(screen)
-                                        {
-                                            var screenPixel = screen.GetPixel(sx, sy);
-                                            if (ComparePixels(pixel, screenPixel))
-                                            {
-                                                isMatch = false;
-                                                break;
-                                            }
-                                        }
-                                    }
-                                }
-                                if (isMatch)
-                                {
-                                    using (var g = Graphics.FromHwnd(Handle))
-                                    {
-                                        g.DrawRectangle(Pens.Black, sx, sy, test.Width, test.Height);
-                                    }
-                                }
-                            }
-                        }
-
+                        RenderTimerTick();
                         renderCurrentTime = DateTime.Now.Ticks;
                     }
                 }
             });
 
+            screenShotThread.Start();
             renderThread.Start();
-          }
+
+        }
 
         private void SetFormToTransparent()
         {
@@ -156,18 +122,62 @@ namespace TrueAdBlocker
         [DllImport("kernel32.dll")]
         public static extern IntPtr OpenProcess(int dwDesiredAccess, bool bInheritHandle, int dwProcessId);
 
-        [DllImport("kernel32.dll")]
+        [DllImport("kernel32.dll")] 
         public static extern bool ReadProcessMemory(int hProcess,
           int lpBaseAddress, byte[] lpBuffer, int dwSize, ref int lpNumberOfBytesRead);
 
         private bool ComparePixels(Color firstPixel, Color secondPixel)
         {
-            return (firstPixel.R - secondPixel.R < 50 && firstPixel.G - secondPixel.G < 50 && firstPixel.B - secondPixel.B < 50);
+            return (firstPixel.R - secondPixel.R < 250 && firstPixel.G - secondPixel.G < 250 && firstPixel.B - secondPixel.B < 250);
         }
 
-        private void Render(object sender, PaintEventArgs e)
+
+        private void ScreenShotTimerTick()
         {
-          
+            lock (test)
+            {
+                using (var g = Graphics.FromImage(screen))
+                {
+                    g.CopyFromScreen(new Point(0, 0), new Point(0, 0), Size);
+                    rectsCache.Clear();
+                    Emgu.CV.Image<Bgr, byte> screenImg = new Image<Bgr, byte>(screen);
+                    Emgu.CV.Image<Bgr, byte> testImg = new Image<Bgr, byte>(test);
+                    using (Image<Emgu.CV.Structure.Gray, float> result = screenImg.MatchTemplate(testImg, Emgu.CV.CvEnum.TemplateMatchingType.CcoeffNormed))
+                    {
+                        double[] minValues, maxValues;
+                        Point[] minLocations, maxLocations;
+                        result.MinMax(out minValues, out maxValues, out minLocations, out maxLocations);
+
+                        // You can try different values of the threshold. I guess somewhere between 0.75 and 0.95 would be good.
+                        if (maxValues[0] > 0.65)
+                        {
+                            // This is a match. Do something with it, for example draw a rectangle around it.
+                            Rectangle match = new Rectangle(maxLocations[0], testImg.Size);
+                            // screenImg.Draw(match, new Bgr(Color.Red), 3);
+                            lock(rectsCache)
+                            {
+                                rectsCache.Add(match);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        private void RenderTimerTick()
+        {
+            using (var g = Graphics.FromHwnd(GetDesktopWindow()))
+            {
+                lock(rectsCache)
+                {
+                    var rectsCacheArray = rectsCache.ToArray();
+                    foreach (var rect in rectsCacheArray)
+                    {
+                        g.FillRectangle(Brushes.Black, rect);
+                    }
+
+                }
+            }
         }
     }
 }
